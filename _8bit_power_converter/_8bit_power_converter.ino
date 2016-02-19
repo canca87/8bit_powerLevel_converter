@@ -32,6 +32,13 @@
  *    PB3 - PWM output to voltage display
  *    PB4 - LED A (active high)
  *    PB5 - LED B (active high)
+ *  LED OUTPUT TABLE: ------------------
+ *    PB2  PB6  PB7  LED info
+ *     0    0    1    Mode 0 : ledA on, ledB off
+ *     1    0    1    Mode 1 : ledA off, ledB on
+ *     x    0    0    Mode 2 : ledA flashing, ledB off
+ *     x    1    0    Mode 3 : ledA flashing alternate ledB
+ *     x    1    1    Mode 4 : ledA off, ledB flashing
 */
 
 //-------Includes ---------------
@@ -44,16 +51,18 @@
 byte displayValue = 0; //to store the value that is displayed on the VoltMeter.
 
 //-------Objects ---------------
+// no objects
 
 //-------Setup ---------------
 void setup() {
   init_ports(); //initialise the IO ports
-  
+  init_pwm(); //initalise the PWM output
 }
 
 //-------Main ---------------
 void loop() {
-  
+  displayValue = readInput(); //read the 8-bit input value
+  writeOutput(displayValue); //write an 8-bit output value
 }
 
 
@@ -98,3 +107,47 @@ void init_pwm(void){
   sei(); //turn on the interrupts
 }
 
+//------ Read 8-bit input value ---------
+byte readInput(void){
+  /*  INPUT:-------------------------------
+   *    MSB(7) (6)  (5)  (4)  (3)  (2)  (1)  (0)LSB
+   *     PB1   PB0  PC5  PC4  PC3  PC2  PC1  PC0
+   */
+   byte value = (((PINB & 0x03) << 6) | (PINC & 0x3F));
+   return value;
+}
+
+//-------Write 8-bit output value --------
+void writeOutput(byte value){
+  PORTD = value; //the output is directly to the portD.
+}
+
+//-------Get operating mode-------
+byte getMode(void){
+  /*
+   *  PB2  PB6  PB7  LED info
+   *   0    0    1    Mode 0 : ledA on, ledB off
+   *   1    0    1    Mode 1 : ledA off, ledB on
+   *   x    0    0    Mode 2 : ledA flashing, ledB off
+   *   x    1    0    Mode 3 : ledA flashing alternate ledB
+   *   x    1    1    Mode 4 : ledA off, ledB flashing
+   */
+   if (PINB & ((1<<PB6) | (1<<PB7))){
+      return 4; //Mode 4 : ledA off, ledB flashing
+   }
+   else if (PINB & (1<<PB6)){
+      return 3; //Mode 3 : ledA flashing alternate ledB
+   }
+   else if (PINB & (1<<PB7)){
+      //can be either mode 1 or 0
+      if(PINB & (1<<PB2)){
+          return 1; //Mode 1 : ledA off, ledB on
+      }
+      else{
+          return 0; //Mode 0 : ledA on, ledB off
+      }
+   }
+   else{
+    return 2; //Mode 2 : ledA flashing, ledB off
+   }
+}
