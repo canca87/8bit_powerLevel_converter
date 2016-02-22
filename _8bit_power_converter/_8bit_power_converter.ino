@@ -8,7 +8,18 @@
  *  and outputs the modified 8-bit signal. There is a Volt-meter 
  *  (display) attached to Timer2A output compare pin to visualise
  *  the 8-bit signals. There are two LED's (PB4 and PB5) to provide
- *  on/off feedback and warn the user of any errrors.
+ *  on/off feedback and warn the user of any errrors, which are also
+ *  wired to two buttons.
+ *  
+ *  The two buttons allow the user to change the power multiplier.
+ *  One button increments the multiplier by 0.1% and the other reduces
+ *  by 0.1%. The value is stored in the EEPROM location 1 on each button
+ *  press, so it should not be changed often (users should not be given
+ *  access the buttons, PCB buttons are recommended).
+ *  EEPROM loation 0 contains an initaliser. If the location 0 != 143 then
+ *  the default value of 18% is recorded in location 1. The % value is 
+ *  stored as % * 10: eg 18% = 180. The value is stored as a byte, therefore
+ *  the maximum multiplier is 25.4% and the minimum is 0%.
  *  
  *  The watchdog timer is in play to make sure the device does not 
  *  lock-up. No IO buffers or input multiplexers are used. The native
@@ -28,6 +39,8 @@
  *     1    1     Preamplifier alarm
  *  MISC INPUTS:------------------------
  *    PB2 - Laser on/off (high/low)
+ *    PB4 - Dual purpose pin btnA active low
+ *    PB5 - Dual purpose pin btnB active low
  *  MISC OUTPUTS:----------------------
  *    PB3 - PWM output to voltage display
  *    PB4 - LED A (active high)
@@ -42,13 +55,17 @@
 */
 
 //-------Includes ---------------
-// nothing to include (yet)
+#include<EEPROM.h> //stores the current multiplier in the EEPROM
 
 //-------Defines ---------------
 // Using direct port access - not arduino pins #'s
 
 //-------Variables ---------------
 byte displayValue = 0; //to store the value that is displayed on the VoltMeter.
+volatile uint16_t checkBTN = 0; //a flag used in the main loop to check the button states.
+volatile uint16_t changeLED = 0; //a flag used in the main loop to flash the LED's.
+byte modVal = 180; //the current power multiplier (ie, 180 = 18%)
+byte previousBTN = 3; //stores the previous state of the button presses (2=a,1=b,0=both,3=none)
 
 //-------Objects ---------------
 // no objects
@@ -57,18 +74,28 @@ byte displayValue = 0; //to store the value that is displayed on the VoltMeter.
 void setup() {
   init_ports(); //initialise the IO ports
   init_pwm(); //initalise the PWM output
+  init_EEPROM(); //initalise the EEPROM
 }
 
 //-------Main ---------------
 void loop() {
   displayValue = readInput(); //read the 8-bit input value
-  writeOutput(displayValue); //write an 8-bit output value
+  writeOutput((byte)(((float)displayValue * ((float)modVal / 10.0)))); //write an 8-bit output value
+  if (checkBTN == 0){ //if the check button flag rolls over (happens at ~30Hz)
+    changeLED++; //increment the changeLED flag;
+    checkBTNstates(); //checks the states of the buttons
+  }
+  if(changeLED){
+    changeLED = 0;//reset the flag to zero
+    changeLEDstates(getMode()); //gets the current mode and updates the LED's
+  }
 }
 
 
 //--------PWM interrupt---------
 ISR(TIMER2_OVF_vect){
-  TCNT2 = 255-displayValue;
+  TCNT2 = 255-displayValue; //set the PWM duty cycle (100% - value)
+  checkBTN = checkBTN + 64; //increment the check button flag (rollover = check buttons)
 }
 
 //-------Port INIT -----------
@@ -105,6 +132,16 @@ void init_pwm(void){
   //TCNT = 255 (max) - displayValue;
   TCNT2 = 255-displayValue;
   sei(); //turn on the interrupts
+}
+
+//-------EEPROM INIT--------------
+void init_EEPROM(void){
+  //Get the modVal from EEPROM
+  if (EEPROM.read(1) != 143){ //if the flag 143 is not present, reset to the default 18%
+    EEPROM.write(0,180); //write the 18% to the memory
+    EEPROM.write(1,143); //set the default OK flag
+  }
+  modVal = EEPROM.read(0); //read the multiplier value from the EEPROM
 }
 
 //------ Read 8-bit input value ---------
@@ -151,3 +188,81 @@ byte getMode(void){
     return 2; //Mode 2 : ledA flashing, ledB off
    }
 }
+
+//--------Change the LED's---------------
+void changeLEDstates(byte mode){
+  /* LED info
+   * Mode 0 : ledA on, ledB off
+   * Mode 1 : ledA off, ledB on
+   * Mode 2 : ledA flashing, ledB off
+   * Mode 3 : ledA flashing alternate ledB
+   * Mode 4 : ledA off, ledB flashing
+    */
+  //switch case here to manage the states
+  switch (mode){
+    case 0:
+      //Mode 0 : ledA on, ledB off
+      PORTB |= (1<<PORTB4); //set ledA
+      PORTB &= ~(1<<PORTB5); //clear ledB
+      break;
+    case 1:
+      //Mode 1 : ledA off, ledB on
+      PORTB &= ~(1<<PORTB4); //clear ledA
+      PORTB |= (1<<PORTB5); //set ledB
+      break;
+    case 2:
+      //Mode 2 : ledA flashing, ledB off
+      PORTB ^= (1<<PORTB4); //toggle ledA
+      PORTB &= ~(1<<PORTB5); //clear ledB
+      break;
+    case 3:
+      //Mode 3 : ledA flashing alternate ledB
+      if ((PINB>>PB4) & 1){ //if ledA on: turn it off (and ledB on)
+        PORTB &= ~(1<<PORTB4); //clear ledA
+        PORTB |= (1<<PORTB5); //set ledB
+      }
+      else{//else if ledA off: turn it on (and ledB off)
+        PORTB |= (1<<PORTB4); //set ledA
+        PORTB &= ~(1<<PORTB5); //clear ledB
+      }
+      break;
+    case 4:
+      //Mode 4 : ledA off, ledB flashing
+      PORTB &= ~(1<<PORTB4); //toggle ledA
+      PORTB ^= (1<<PORTB5); //clear ledB
+      break;
+    default:
+      //Unknown mode: both off.
+      PORTB &= ~(1<<PORTB4); //clear ledA
+      PORTB &= ~(1<<PORTB5); //clear ledB
+      break;
+  }
+}
+
+//--------Check the button states--------------
+void checkBTNstates(void){
+  //make outputs as inputs
+  //read the current LED state first
+  byte LEDstate = PORTB & 0x30; //save only PB4 and PB5 values
+  DDRB &= ~((1<<DDB5) | (1<<DDB4)); //change DDRD to zero for input
+  PORTB &= ~((1<<PORTB5) | (1<<PORTB4));//make sure they are tri-state (no pullups)
+  //read in the value
+  byte val = ((PINB & (1<<PB5)) << 1) | (PINB & (1<<PB4)); //normally 3; 2 = PB4 low; 1 = PB5 low.
+  //make input back to outputs
+  DDRB |= ((1<<DDB5) | (1<<DDB4)); //change DDRD to one for output
+  PORTB |= (LEDstate & 0x30);//put the LED's back to their previous values
+  //work out if any buttons were pressed
+  if (val != previousBTN){ //YES - so determine which one(s)
+    previousBTN = val; //store the current button press (button lock-out)
+    //adjust the values as necessary
+    if (val == 2){ 
+      modVal++; //increment the power multiplier by 0.1%
+      EEPROM.write(0,modVal); //save it to EEPROM
+    }
+    else if (val == 1){
+      modVal--; //decrement the power multiplier by 0.1%
+      EEPROM.write(0,modVal); //save it to the EEPROM
+    }
+  }
+}
+
