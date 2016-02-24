@@ -63,7 +63,7 @@
 //-------Variables ---------------
 byte displayValue = 0; //to store the value that is displayed on the VoltMeter.
 volatile uint16_t checkBTN = 0; //a flag used in the main loop to check the button states.
-volatile uint16_t changeLED = 0; //a flag used in the main loop to flash the LED's.
+uint16_t changeLED = 0; //a flag used in the main loop to flash the LED's.
 byte modVal = 180; //the current power multiplier (ie, 180 = 18%)
 byte previousBTN = 3; //stores the previous state of the button presses (2=a,1=b,0=both,3=none)
 
@@ -79,13 +79,18 @@ void setup() {
 
 //-------Main ---------------
 void loop() {
-  displayValue = readInput(); //read the 8-bit input value
-  writeOutput((byte)(((float)displayValue * ((float)modVal / 10.0)))); //write an 8-bit output value
-  if (checkBTN == 0){ //if the check button flag rolls over (happens at ~30Hz)
+  byte tempValue = readInput(); //read the 8-bit input value
+  displayValue = modifyInput(tempValue);
+  writeOutput(displayValue); //write an 8-bit output value
+  
+  if (checkBTN > 1000){ //if the check button flag rolls over (happens at ~30Hz)
+    cli(); //stop interrupts while we reset the flag
+    checkBTN = 0; //reset the flag
+    sei(); //start the interrupts again : this will cause a tiny jitter on the PWM, but it should be okay.
     changeLED++; //increment the changeLED flag;
     checkBTNstates(); //checks the states of the buttons
   }
-  if(changeLED){
+  if(changeLED > 20){ //change the LED's (flash) and check any button presses.
     changeLED = 0;//reset the flag to zero
     changeLEDstates(getMode()); //gets the current mode and updates the LED's
   }
@@ -94,8 +99,8 @@ void loop() {
 
 //--------PWM interrupt---------
 ISR(TIMER2_OVF_vect){
-  TCNT2 = 255-displayValue; //set the PWM duty cycle (100% - value)
-  checkBTN = checkBTN + 64; //increment the check button flag (rollover = check buttons)
+  OCR2A = 255-displayValue; //set the PWM duty cycle (100% - value)
+  checkBTN ++; //increment the check button flag (rollover = check buttons)
 }
 
 //-------Port INIT -----------
@@ -129,8 +134,8 @@ void init_pwm(void){
   TCCR2B = (0<<FOC2A) | (0<<FOC2B) | (0<<WGM22) | (0<<CS22) | (0<<CS21) | (1<<CS20);
   //TIMSK2 register: set the timer overflow interrupt - we set TCNT every interrupt.
   TIMSK2 = (0<<OCIE2B) | (0<<OCIE2B) | (1<<TOIE2);
-  //TCNT = 255 (max) - displayValue;
-  TCNT2 = 255-displayValue;
+  //OCR2A = 255 (max) - displayValue;
+  OCR2A = 255-displayValue;
   sei(); //turn on the interrupts
 }
 
@@ -264,5 +269,16 @@ void checkBTNstates(void){
       EEPROM.write(0,modVal); //save it to the EEPROM
     }
   }
+}
+
+//--------- Add x% to the input value ------------------
+byte modifyInput(byte val){
+  // result = input * 1.18 (ie add 18%) : this is done with float variables for precision (but its slow).
+  float result = (((float)val * ((float)(modVal+ 1000) / 1000.0)));
+  // if the result is too big for a byte, limit it to the max byte value.
+  if (result > 255){
+    result = 255; //max byte value (result was bigger than a byte).
+  }
+  return (byte)result; //return the result as a byte
 }
 
